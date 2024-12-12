@@ -15,6 +15,7 @@ class Rain {
         Rain(std::map<std::string, double> params, std::string image_path);
         void render(const std::string mode="sphere");
         void blur(const cv::Mat &kernel);
+        void blur_foreground(const int &kernel_size=15, const int &blur_kernel_size=21);
         cv::Mat get_kernel(int diameter=7);
         
 

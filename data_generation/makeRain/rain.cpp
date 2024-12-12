@@ -14,7 +14,6 @@ Rain::Rain(map<string, double> params, string image_path) {
     B = params["B"];
     psi = params["psi"] / 180.0 * M_PI;
     gamma = asin(n_air / n_water);
-
     image = cv::imread(image_path);
     intrinsic = get_intrinsic(image_path);
     normal = Row<double> {0.0, -1.0 * cos(psi), sin(psi)};
@@ -23,15 +22,19 @@ Rain::Rain(map<string, double> params, string image_path) {
 
 Mat<double> Rain::get_intrinsic(const string &image_path) {
     string json_path;
-    json_path = regex_replace(image_path, regex(R"(leftImage)"), "camera");
-    json_path = regex_replace(json_path, regex(R"(leftImg8bit.png$)"), "camera.json");
-    //json_path = regex_replace(image_path, regex(R"(.png$)"), ".json");
+    json_path = regex_replace(image_path, regex(R"(leftImg8bit_rain)"), "camera");
+    json_path = regex_replace(json_path, regex(R"(_camera.*\.png$)"), "_camera.json");
 
-    ifstream stream(json_path, ifstream::binary);
+    // json_path = regex_replace(image_path, regex(R"(leftImg8bit)"), "camera");
+    // json_path = regex_replace(json_path, regex(R"(leftImg8bit.png$)"), "camera.json"); // get intrinstic file path
+    // json_path = regex_replace(json_path, regex(R"(.png$)"), ".json");
+
+    // cout << json_path << endl;
+    ifstream stream(json_path, ifstream::binary); 
+
     Json::Value root;
     stream >> root;
     root = root.get("intrinsic", 0);
-
     intrinsic = zeros<mat>(3, 3);
     intrinsic(0, 0) = root.get("fx", 0).asDouble();
     intrinsic(1, 1) = root.get("fy", 0).asDouble();
@@ -68,8 +71,8 @@ void Rain::get_sphere_raindrop(const int &W, const int &H) {
 
     mt19937 rng;
     rng.seed(random_device()());
-    uniform_int_distribution<mt19937::result_type> random_rain(100, 200);
-    uniform_int_distribution<mt19937::result_type> random_tau(30, 45);
+    uniform_int_distribution<mt19937::result_type> random_rain(50, 200); // raindrop number
+    uniform_int_distribution<mt19937::result_type> random_tau(30, 45); //incident angle of each raindrop
     uniform_real_distribution<double> random_loc(0.0, 1.0);
 
     int n = random_rain(rng);
@@ -83,7 +86,7 @@ void Rain::get_sphere_raindrop(const int &W, const int &H) {
         double tau = random_tau(rng);
         tau  = tau / 180 * M_PI;
 
-        double glass_r = 0.8 + 0.6 * random_loc(rng);
+        double glass_r = 0.5 + 2.0 * random_loc(rng); //raindrop size
 
         // raindrop radius in sky dataset
         double r_sphere = glass_r / sin(tau);
@@ -159,14 +162,12 @@ Row<double> Rain::to_sphere_section_env(const int &x, const int &y, const int &i
 
 /**
  * Render the rain-drop image
- * @param mode in [sphere, bezier, random]
  */
 void Rain::render(const std::string mode) {
     int h = image.rows;
     int w = image.cols;
     rain_image = image.clone();
     mask = cv::Mat(h, w, CV_8UC1, cv::Scalar(0));
-
     get_sphere_raindrop(w, h);
     Row<double> p;
     for(int x = 0; x < w; x++) {
@@ -222,6 +223,30 @@ void Rain::blur(const cv::Mat &kernel) {
 
     blured = blured * 1.2;
     blured.copyTo(blur_image, mask);
+}
+
+void Rain::blur_foreground(const int &kernel_size, const int &blur_kernel_size) {
+    cv::Mat dilated_mask; 
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
+    cv::dilate(mask, dilated_mask, kernel);
+    // 对 dilated_mask 进行高斯平滑
+    cv::Mat smooth_mask;
+    cv::GaussianBlur(dilated_mask, smooth_mask, cv::Size(15, 15), 5.0);
+    smooth_mask.convertTo(smooth_mask, CV_32F, 1.0 / 255.0); // 归一化到 [0, 1]
+    // 对整个图像进行模糊
+    cv::Mat blurred_image;
+    cv::GaussianBlur(blur_image, blurred_image, cv::Size(blur_kernel_size, blur_kernel_size), blur_kernel_size / 6.0);
+    // 融合模糊图像和原始图像
+    cv::Mat blended_image;
+    cv::Mat rain_image_f, blurred_image_f;
+    blur_image.convertTo(rain_image_f, CV_32F);
+    blurred_image.convertTo(blurred_image_f, CV_32F);
+    //TODO: debug after
+    float weight_factor = 0.8; 
+    cv::Mat smooth_mask_3c;
+    cv::cvtColor(smooth_mask, smooth_mask_3c, cv::COLOR_GRAY2BGR);
+    blended_image = rain_image_f.mul(1.0 - smooth_mask_3c * weight_factor) + blurred_image_f.mul(smooth_mask_3c * weight_factor);
+    blended_image.convertTo(blur_image, CV_8UC3); // 转回 8 位图像
 }
 
 #pragma clang diagnostic pop

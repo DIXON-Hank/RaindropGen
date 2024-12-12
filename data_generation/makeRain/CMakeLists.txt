@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 2.8)
 
 project(Test)
 find_package(OpenCV REQUIRED)
+find_package(Boost REQUIRED COMPONENTS filesystem system)
 find_library(JSONCPP_LIBS jsoncpp)
 find_library(ARMA_LIBS armadillo)
 
@@ -16,5 +17,7 @@ aux_source_directory(. DIR_SRCS)
 add_executable(Test ${DIR_SRCS})
 target_link_libraries(Test ${OpenCV_LIBS}
                            ${JSONCPP_LIBS}
-                           ${ARMA_LIBS})
+                           ${ARMA_LIBS}
+                           Boost::filesystem
+                           Boost::system)
 
