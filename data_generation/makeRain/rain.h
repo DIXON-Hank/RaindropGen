@@ -20,7 +20,7 @@ class Rain {
         
 
     private:
-        arma::Mat<double> get_intrinsic(const std::string &image_path);
+        arma::Mat<double> get_intrinsic();
         arma::Row<double> to_glass(const double &x, const double &y);
         double w_in_plane(const double &u, const double &v);
         void get_sphere_raindrop(const int &W, const int &H);
@@ -32,6 +32,7 @@ class Rain {
         arma::Row<double> to_sphere_section_env(const int &x, const int &y, const int &id);
         arma::Row<double> to_orth_bezier_env(const int &x, const int &y, const int &id);
         auto cubic_bezier_curve(arma::vec pt1, arma::vec pt2, arma::vec pt3, arma::vec pt4);
+        std::vector<std::string> extract_name(const std::string &path);
         
     private:
         double M;
@@ -61,6 +62,8 @@ class Rain {
         cv::Mat mask;
         cv::Mat rain_image;
         cv::Mat blur_image;
+        std::string frame_name;
+        std::string city_name;
 };
 
 #endif

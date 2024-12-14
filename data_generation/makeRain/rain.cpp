@@ -9,27 +9,38 @@
 using namespace std;
 using namespace arma;
 
+string camera_root = "/mnt/d/Documents/Derain/Data/mydataset/camera";
+
 Rain::Rain(map<string, double> params, string image_path) {
     M = params["M"];
     B = params["B"];
     psi = params["psi"] / 180.0 * M_PI;
     gamma = asin(n_air / n_water);
     image = cv::imread(image_path);
-    intrinsic = get_intrinsic(image_path);
+    frame_name = extract_name(image_path)[0];
+    city_name = extract_name(image_path)[1];
+    intrinsic = get_intrinsic();
     normal = Row<double> {0.0, -1.0 * cos(psi), sin(psi)};
     o_g = (normal(2) * M / dot(normal, normal)) * normal;
 }
 
-Mat<double> Rain::get_intrinsic(const string &image_path) {
+vector<string> Rain::extract_name(const string &path) {
+    smatch match_frame, match_city; // get frame_name and city_name from image_path
+    if (!regex_search(path, match_frame, regex(R"(\w+_\d+_\d+)"))){
+        throw runtime_error("Filename extraction failed!!");
+    }
+    if (!regex_search(path, match_city, regex(R"(\w+(?=_\d+_\d+))"))){
+        throw runtime_error("Filename extraction failed!!");
+    }
+    return {match_frame[0].str(), match_city[0].str()}; 
+}
+
+Mat<double> Rain::get_intrinsic() {
+    // get intrinstic file path
     string json_path;
-    json_path = regex_replace(image_path, regex(R"(leftImg8bit_rain)"), "camera");
-    json_path = regex_replace(json_path, regex(R"(_camera.*\.png$)"), "_camera.json");
+    json_path = camera_root + "/" + city_name + "/" + frame_name + "_camera.json";
 
-    // json_path = regex_replace(image_path, regex(R"(leftImg8bit)"), "camera");
-    // json_path = regex_replace(json_path, regex(R"(leftImg8bit.png$)"), "camera.json"); // get intrinstic file path
-    // json_path = regex_replace(json_path, regex(R"(.png$)"), ".json");
-
-    // cout << json_path << endl;
+    cout << json_path << endl;
     ifstream stream(json_path, ifstream::binary); 
 
     Json::Value root;
@@ -225,7 +236,7 @@ void Rain::blur(const cv::Mat &kernel) {
     blured.copyTo(blur_image, mask);
 }
 
-void Rain::blur_foreground(const int &kernel_size, const int &blur_kernel_size) {
+void Rain::blur_foreground(const int &kernel_size, const int &blur_kernel_size) { //TODO: deal with the edge problem
     cv::Mat dilated_mask; 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
     cv::dilate(mask, dilated_mask, kernel);
@@ -241,8 +252,7 @@ void Rain::blur_foreground(const int &kernel_size, const int &blur_kernel_size) 
     cv::Mat rain_image_f, blurred_image_f;
     blur_image.convertTo(rain_image_f, CV_32F);
     blurred_image.convertTo(blurred_image_f, CV_32F);
-    //TODO: debug after
-    float weight_factor = 0.8; 
+    float weight_factor = 0.8;
     cv::Mat smooth_mask_3c;
     cv::cvtColor(smooth_mask, smooth_mask_3c, cv::COLOR_GRAY2BGR);
     blended_image = rain_image_f.mul(1.0 - smooth_mask_3c * weight_factor) + blurred_image_f.mul(smooth_mask_3c * weight_factor);
