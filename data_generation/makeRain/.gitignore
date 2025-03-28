@@ -37,3 +37,6 @@ test
 
 # build directory
 build
+
+*.png
+_*
