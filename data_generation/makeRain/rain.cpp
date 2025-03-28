@@ -11,28 +11,42 @@ using namespace arma;
 
 string camera_root = "/mnt/d/Documents/Derain/Data/mydataset/camera";
 
-Rain::Rain(map<string, double> params, string image_path) {
+Rain::Rain(map<string, double> params, string image_path, const mt19937 seed) {
+    rng = seed;
     M = params["M"];
     B = params["B"];
+    dropsize = params["dropsize"];
     psi = params["psi"] / 180.0 * M_PI;
     gamma = asin(n_air / n_water);
     image = cv::imread(image_path);
     frame_name = extract_name(image_path)[0];
     city_name = extract_name(image_path)[1];
+    foggy_name = extract_name(image_path)[2];
     intrinsic = get_intrinsic();
     normal = Row<double> {0.0, -1.0 * cos(psi), sin(psi)};
     o_g = (normal(2) * M / dot(normal, normal)) * normal;
 }
 
 vector<string> Rain::extract_name(const string &path) {
-    smatch match_frame, match_city; // get frame_name and city_name from image_path
+    smatch match_frame, match_city, match_foggy; // get frame_name and city_name from image_path
     if (!regex_search(path, match_frame, regex(R"(\w+_\d+_\d+)"))){
-        throw runtime_error("Filename extraction failed!!");
+        throw runtime_error("Framename extraction failed!!");
     }
     if (!regex_search(path, match_city, regex(R"(\w+(?=_\d+_\d+))"))){
-        throw runtime_error("Filename extraction failed!!");
+        throw runtime_error("Cityname extraction failed!!");
     }
-    return {match_frame[0].str(), match_city[0].str()}; 
+    if (!regex_search(path, match_foggy, regex(R"(beta_[0-9]+(?:\.[0-9]+)?)"))){
+        throw runtime_error("Foggyname extraction failed!!");
+    }
+    // since there is no matching foggy image for beta=0.015, hereby use beta=0.02 instead 
+    if (match_foggy[0].str() == "beta_0.01" || match_foggy[0].str() == "beta_0.005"){
+        return {match_frame[0].str(), match_city[0].str(), match_foggy[0].str()}; 
+    }
+    else if (match_foggy[0].str() == "beta_0.015" || match_foggy[0].str() == "beta_0.02"){
+        return {match_frame[0].str(), match_city[0].str(), "beta_0.02"};
+    }
+    else 
+        return {"e", "e", "e"};
 }
 
 Mat<double> Rain::get_intrinsic() {
@@ -40,7 +54,7 @@ Mat<double> Rain::get_intrinsic() {
     string json_path;
     json_path = camera_root + "/" + city_name + "/" + frame_name + "_camera.json";
 
-    cout << json_path << endl;
+    // cout << json_path << endl;
     ifstream stream(json_path, ifstream::binary); 
 
     Json::Value root;
@@ -74,41 +88,56 @@ void Rain::get_sphere_raindrop(const int &W, const int &H) {
     centers.clear();
     radius.clear();
 
-
+    //raindrop location
     auto left_upper = to_glass(0, 0);
     auto left_bottom = to_glass(0, H);
     auto right_upper = to_glass(W, 0);
     auto right_bottom = to_glass(W, H);
 
-    mt19937 rng;
-    rng.seed(random_device()());
     uniform_int_distribution<mt19937::result_type> random_rain(50, 200); // raindrop number
     uniform_int_distribution<mt19937::result_type> random_tau(30, 45); //incident angle of each raindrop
     uniform_real_distribution<double> random_loc(0.0, 1.0);
 
     int n = random_rain(rng);
+    int max_attempts = 100; // Maximum attempts to find a non-overlapping position
+    
     for(int i = 0; i < n; i++) {
-        double u = left_bottom(0) + (right_bottom(0) - left_bottom(0)) * random_loc(rng);
-        double v = left_upper(1) + (right_bottom(1) - left_upper(1)) * random_loc(rng);
-//        double u = left_bottom(0) + (right_bottom(0) - left_bottom(0)) * 0.5;
-//        double v = left_upper(1) + (right_bottom(1) - left_upper(1)) * 0.1;
-        double w = w_in_plane(u, v);
+        bool found_valid = false;
+        for (int attempt = 0; attempt < max_attempts; attempt++) {
+            double u = left_bottom(0) + (right_bottom(0) - left_bottom(0)) * random_loc(rng);
+            double v = left_upper(1) + (right_bottom(1) - left_upper(1)) * random_loc(rng);
+            double w = w_in_plane(u, v);
 
-        double tau = random_tau(rng);
-        tau  = tau / 180 * M_PI;
+            double tau = random_tau(rng);
+            tau  = tau / 180 * M_PI;
 
-        double glass_r = 0.5 + 2.0 * random_loc(rng); //raindrop size
+            double glass_r = dropsize * (1 + 1 * random_loc(rng)); //raindrop size
+            double r_sphere = glass_r / sin(tau);
 
-        // raindrop radius in sky dataset
-        double r_sphere = glass_r / sin(tau);
+            Row<double> g_c  {u, v, w};
+            Row<double> c = g_c - normal * r_sphere * cos(tau);
+            
+            // Check for overlap with existing raindrops
+            bool overlap = false;
+            for (size_t j = 0; j < g_centers.size(); j++) {
+                double dist = norm(g_c - g_centers[j]);
+                if (dist < g_radius[j] + glass_r) {
+                    overlap = true;
+                    // cout << "Overlap Found" << endl;
+                    break;
+                }
+            }
 
-        Row<double> g_c  {u, v, w};
-        Row<double> c = g_c - normal * r_sphere * cos(tau);
-
-        g_centers.push_back(move(g_c));
-        g_radius.push_back(glass_r);
-        centers.push_back(move(c));
-        radius.push_back(r_sphere);
+            // If no overlap, accept this raindrop
+            if (!overlap) {
+                g_centers.push_back(std::move(g_c));
+                g_radius.push_back(glass_r);
+                centers.push_back(std::move(c));
+                radius.push_back(r_sphere);
+                found_valid = true;
+                break;
+            }
+        }        
     }
 }
 
@@ -228,35 +257,47 @@ cv::Mat Rain::get_kernel(int diameter) {
 }
 
 void Rain::blur(const cv::Mat &kernel) {
-    blur_image = image.clone();
-    cv::Mat blured;
-    cv::filter2D(rain_image, blured, -1, kernel);
-
-    blured = blured * 1.2;
-    blured.copyTo(blur_image, mask);
+    blur_image = rain_image.clone();
+    // blur_image = rain.clone();
+    // cv::Mat blured;
+    // cv::filter2D(rain_image, blured, -1, kernel);
+    
+    // blured = blured * 1.2;
+    // blured.copyTo(blur_image, mask);
 }
 
-void Rain::blur_foreground(const int &kernel_size, const int &blur_kernel_size) { //TODO: deal with the edge problem
+/**
+ * @param kernel_size Size of the dilation kernel. 
+ *                    - Controls the expansion of the blurred region.
+ *                    - Larger values expand the mask further, increasing the size of the blurred area
+ * @param blur_kernel_size Size of the Gaussian blur kernel. 
+ *                         - Controls the intensity of the blur effect.
+ *                         - Larger values result in stronger blur and a smoother appearance
+ */
+void Rain::blur_foreground(const int &kernel_size, const int &blur_kernel_size) { //TODO add random kernel_size
     cv::Mat dilated_mask; 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
     cv::dilate(mask, dilated_mask, kernel);
-    // 对 dilated_mask 进行高斯平滑
+    // generate smooth mask
     cv::Mat smooth_mask;
-    cv::GaussianBlur(dilated_mask, smooth_mask, cv::Size(15, 15), 5.0);
-    smooth_mask.convertTo(smooth_mask, CV_32F, 1.0 / 255.0); // 归一化到 [0, 1]
-    // 对整个图像进行模糊
-    cv::Mat blurred_image;
-    cv::GaussianBlur(blur_image, blurred_image, cv::Size(blur_kernel_size, blur_kernel_size), blur_kernel_size / 6.0);
-    // 融合模糊图像和原始图像
+    cv::GaussianBlur(dilated_mask, smooth_mask, cv::Size(kernel_size, kernel_size), blur_kernel_size / 6.0);
+    smooth_mask.convertTo(smooth_mask, CV_32FC3, 1.0 / 255.0); // normalize to [0, 1]
+    // bluring on whole image
+    cv::Mat blur_foreground;
+    cv::GaussianBlur(blur_image, blur_foreground, cv::Size(blur_kernel_size, blur_kernel_size), blur_kernel_size / 6.0);
+    
+    // Blending, first convert to 32 bit
     cv::Mat blended_image;
-    cv::Mat rain_image_f, blurred_image_f;
-    blur_image.convertTo(rain_image_f, CV_32F);
-    blurred_image.convertTo(blurred_image_f, CV_32F);
-    float weight_factor = 0.8;
+    cv::Mat blur_image_f, blur_foreground_f;
+    blur_image.convertTo(blur_image_f, CV_32FC3);
+    blur_foreground.convertTo(blur_foreground_f, CV_32FC3);
     cv::Mat smooth_mask_3c;
     cv::cvtColor(smooth_mask, smooth_mask_3c, cv::COLOR_GRAY2BGR);
-    blended_image = rain_image_f.mul(1.0 - smooth_mask_3c * weight_factor) + blurred_image_f.mul(smooth_mask_3c * weight_factor);
-    blended_image.convertTo(blur_image, CV_8UC3); // 转回 8 位图像
+
+    cv::Mat ones_single = cv::Mat::ones(smooth_mask_3c.size(), CV_32F), ones_3c;
+    cv::cvtColor(ones_single, ones_3c, cv::COLOR_GRAY2BGR);
+    blended_image = blur_image_f.mul(ones_3c - smooth_mask_3c) + blur_foreground_f.mul(smooth_mask_3c);
+    blended_image.convertTo(blur_image, CV_8UC3); // covert back to 8 bit
 }
 
 #pragma clang diagnostic pop

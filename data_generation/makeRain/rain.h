@@ -4,7 +4,7 @@
 #include <map>
 #include <string>
 #include <vector>
-
+#include <random>
 #include <armadillo>
 #include <opencv2/opencv.hpp>
 
@@ -12,7 +12,7 @@
 class Rain {
     public:
         Rain() = delete;
-        Rain(std::map<std::string, double> params, std::string image_path);
+        Rain(std::map<std::string, double> params, std::string image_path, std::mt19937 seed);
         void render(const std::string mode="sphere");
         void blur(const cv::Mat &kernel);
         void blur_foreground(const int &kernel_size=15, const int &blur_kernel_size=21);
@@ -37,6 +37,7 @@ class Rain {
     private:
         double M;
         double B;
+        double dropsize;
         double psi;
         double n_water = 1.33;
         double n_air = 1.0;
@@ -58,12 +59,14 @@ class Rain {
         std::vector<arma::Mat<double>> g_w_curves;
 
     public:
+        std::mt19937 rng;
         cv::Mat image;
         cv::Mat mask;
         cv::Mat rain_image;
         cv::Mat blur_image;
         std::string frame_name;
         std::string city_name;
+        std::string foggy_name;
 };
 
 #endif

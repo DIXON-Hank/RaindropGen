@@ -4,3 +4,4 @@ __pycache__/
 .code*
 .coode/*
 _*
+.vscode

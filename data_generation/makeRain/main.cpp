@@ -2,6 +2,7 @@
 #include <random>
 #include <glob.h>
 #include <regex>
+#include <chrono>
 #include <boost/format.hpp>
 #include <boost/filesystem.hpp>
 
@@ -12,42 +13,49 @@ namespace fs = boost::filesystem;
 using boost::format;
 using boost::str;
 
-float SCALE = 1.0;
+float SCALE = 0.5;
 
 void getFiles(const string &pattern, vector<string> &filePath);
+std::string get_current_time();
 
 int main() {
     map<string, double> params;
     vector<string> imgPath;
-    getFiles("/mnt/d/Documents/Derain/Data/mydataset/debug/train/*.png", imgPath);
+    string time{get_current_time()}; //record generation time if needed
+    getFiles("/mnt/d/Documents/Derain/Data/RDScityscapes/rainstreak/train/*.png", imgPath);
     // cout << imgPath[0] << endl;
 
     // number of images each original image produces
-    int totalIndex = imgPath.size(), numsPerImg{5};
+    int totalIndex = imgPath.size(), numsPerImg{1};
     cout << "Total images: " << totalIndex << endl;
 
     // some random number generator
     mt19937 rng;
     rng.seed(random_device()());
-    uniform_int_distribution<int> random_M(100, 500);
-    uniform_int_distribution<int> random_B(4000, 8000);
-    uniform_int_distribution<int> random_psi(80, 90);
-    uniform_int_distribution<int> random_dia(7, 20);   // blur kernel size
-
+    uniform_int_distribution<int> random_M(100, 250); // glass distance (mm)
+    uniform_int_distribution<int> random_B(8000, 15000); //background distance (mm)
+    uniform_int_distribution<int> random_psi(45, 85); //glass angle
+    uniform_int_distribution<int> random_dia(7, 20); // blur kernel size
+    uniform_int_distribution<int> kernel_dist(19, 25); // gaussian kernel_size (blur area)
+    uniform_int_distribution<int> blur_dist(9, 15); // gaussian blur kernel_size (blur intensity)
+    int kernel_size{23}, blur_kernel_size{13};
+    
     //create save directory
-    string savePath{"/home/dixonhank/workspace/RaindropGen/_data/output/"};
-    string gtPath = savePath + "gt";
-    string RDPath =  savePath + "raindrop";
-    string MaskPath =  savePath + "raindrop_mask";
-    fs::create_directories(savePath);
-    // fs::create_directories(gtPath);
-    fs::create_directories(RDPath);
-    fs::create_directories(MaskPath);
+    string save_root{"/mnt/d/Documents/Derain/Data/RDScityscapes/"}; //remeber to add / in the end
+    string gt_root = save_root + "gt/train";
+    string foggy_root = save_root + "foggy/train";
+    string all_root =  save_root + "all/train";
+    string mask_root =  save_root + "raindrop_mask/train";
+    string raindrop_root = save_root + "raindrop/train";
+    fs::create_directories(save_root);
+    fs::create_directories(gt_root);
+    fs::create_directories(all_root);
+    fs::create_directories(mask_root);
+    fs::create_directories(raindrop_root);
 
     for(int index{0}; index < totalIndex; ++index) {
         fs::path img_path{imgPath[index]};        
-        std::string img_name{img_path.filename().string()};
-        
+        string img_name{img_path.stem().string()};
         if(index % 10 == 0) {
             cout << "Processing: " << setprecision(2) << index << " / " << totalIndex << " (" << float(index) / totalIndex << ")" << endl;
         }
@@ -55,52 +63,45 @@ int main() {
         //Generation Parameters Settings
         params["M"] = random_M(rng);
         params["B"] = random_B(rng);
-        // params["psi"] = random_psi(rng);
+        params["psi"] = random_psi(rng);
+        params["dropsize"] = 0.8;
+        kernel_size = kernel_dist(rng) | 1;
+        blur_kernel_size = blur_dist(rng) | 1;
 
         // params["M"] = 200;
         // params["B"] = 8000;
-        params["psi"] = 90;
-        
-        Rain rain(params, imgPath[index]);
+        // params["psi"] = 90;
+
+        Rain all(params, imgPath[index], rng);
+        string foggy_path = str(format("%1%/%2%_leftImg8bit_foggy_%3%.png")%foggy_root%all.frame_name%all.foggy_name);
+        // cout << foggy_path << endl;
+        Rain foggy(params, foggy_path, rng);
+        // cout << foggy.frame_name << " " << foggy.foggy_name << endl;
         // cv::Mat img;
-        // cv::resize(rain.image, img, cv::Size(), SCALE, SCALE);
-        // cv::imwrite(str(format("%1%/%2%.png")%gtPath%img_name), img); 
+        // cv::resize(all.image, img, cv::Size(), SCALE, SCALE);
+        // cv::imwrite(str(format("%1%/%2%.png")%gt_root%img_name), img); 
 
         for(int i{0}; i < numsPerImg; i++) {
-            rain.render();      
-            cv::Mat rain_img;
-            cv::resize(rain.rain_image, rain_img, cv::Size(), SCALE, SCALE);
-
-            auto kernel = rain.get_kernel(random_dia(rng));
-            rain.blur(kernel);
+            all.render();
+            foggy.render();      
+            cv::Mat all_img, raindrop_img;
+            cv::resize(all.rain_image, all_img, cv::Size(), SCALE, SCALE);
+            cv::resize(foggy.rain_image, raindrop_img, cv::Size(), SCALE, SCALE);
+            auto kernel = all.get_kernel(random_dia(rng));
+            all.blur(kernel);
+            foggy.blur(kernel);
 
             // add foreground blur
-            rain.blur_foreground(); 
+            all.blur_foreground(kernel_size, blur_kernel_size); 
+            foggy.blur_foreground(kernel_size, blur_kernel_size); 
 
-            cv::Mat mask, blur;
-            cv::resize(rain.mask, mask, cv::Size(), SCALE, SCALE, cv::INTER_NEAREST);
-            cv::resize(rain.blur_image, blur, cv::Size(), SCALE, SCALE);
-            cv::imwrite(str(format("%1%/%2%_%3%.png")%RDPath%img_name%count), mask);
-            cv::imwrite(str(format("%1%/%2%_%3%.png")%MaskPath%img_name%count), blur);
-
-            // std::string path_sem = std::regex_replace(imgPath[index], regex(R"(leftImage)"), "gtFine");
-            // std::string path_sem_seg = std::regex_replace(path_sem, regex(R"(leftImg8bit)"), "gtFine_labelIds");
-            // std::string path_ins_seg = std::regex_replace(path_sem, regex(R"(leftImg8bit)"), "gtFine_instanceIds");
-            // std::string path_sem_seg_color = std::regex_replace(path_sem, regex(R"(leftImg8bit)"), "gtFine_color");
-            
-            // cv::Mat sem = cv::imread(path_sem_seg, -1);
-            // cv::Mat sem_save;
-            // cv::resize(sem, sem_save, cv::Size(), SCALE, SCALE, cv::INTER_NEAREST);
-            // // cv::imwrite(str(format("%1%/%2%_%3%_S.png")%savePath%index%count), sem_save);
-            // sem = cv::imread(path_sem_seg_color);
-            // sem_save;
-            // cv::resize(sem, sem_save, cv::Size(), SCALE, SCALE, cv::INTER_NEAREST);
-            // // cv::imwrite(str(format("%1%/%2%_%3%_S_color.png")%savePath%index%count), sem_save);
-            // sem = cv::imread(path_ins_seg, -1);
-            // sem_save;
-            // cv::resize(sem, sem_save, cv::Size(), SCALE, SCALE, cv::INTER_NEAREST);
-
-            // cv::imwrite(str(format("%1%/%2%_%3%_Ins.png")%savePath%index%count), sem_save);
+            cv::Mat mask_img, all_blur, raindrop_blur;
+            cv::resize(all.mask, mask_img, cv::Size(), SCALE, SCALE, cv::INTER_NEAREST);
+            cv::resize(all.blur_image, all_blur, cv::Size(), SCALE, SCALE);
+            cv::resize(foggy.blur_image, raindrop_blur, cv::Size(), SCALE, SCALE);
+            cv::imwrite(str(format("%1%/%2%_%3%.png")%all_root%img_name%count), all_blur);
+            cv::imwrite(str(format("%1%/%2%_%3%.png")%raindrop_root%img_name%count), raindrop_blur);
+            cv::imwrite(str(format("%1%/%2%_%3%.png")%mask_root%img_name%count), mask_img);
 
 //            cv::waitKey();
             ++count;
@@ -122,4 +123,15 @@ void getFiles(const string &pattern, vector<string> &filePath) {
         globfree(&globBuf);
     }
 }
+
+std::string get_current_time() {
+    auto now = std::chrono::system_clock::now();            
+    auto time_t_now = std::chrono::system_clock::to_time_t(now); 
+    std::tm tm_now = *std::localtime(&time_t_now);          
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm_now, "%Y-%m-%d_%H-%M-%S");     
+    return oss.str();                                       
+}
+
 
